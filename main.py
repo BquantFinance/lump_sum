@@ -5,7 +5,7 @@ Comparativa realista con:
 - Dos modos DCA: Capital disponible vs Aportación periódica
 - Opción de aportación a principio o final de mes
 - Coste de oportunidad (solo modo capital disponible)
-- Ticker libre + IRPF España 2024
+- Ticker libre + IRPF España 
 
 Autor: BQuant Finance
 """
@@ -812,7 +812,7 @@ No hay coste de oportunidad porque el dinero no existe hasta que llega.</small>
     
     st.markdown('<div class="separator"></div>', unsafe_allow_html=True)
     
-    with st.expander("ℹ️ Tramos IRPF 2024"):
+    with st.expander("ℹ️ Tramos IRPF"):
         st.markdown("""
 **Base del Ahorro:**
 - Hasta 6.000€: **19%**
@@ -832,7 +832,7 @@ st.markdown("""
 Lump Sum vs Dollar Cost Averaging
 </h1>
 <p style="color: #64748b; font-size: 1rem; margin-bottom: 16px;">
-Comparativa realista con dos modos DCA e impuestos IRPF España 2024
+Comparativa realista con dos modos DCA e impuestos IRPF España
 </p>
 """, unsafe_allow_html=True)
 
@@ -1348,7 +1348,7 @@ st.markdown(f"""
 <strong>ℹ️ Metodología:</strong><br>
 • <strong>Lump Sum:</strong> Invierte todo el día 1, vende al final.<br>
 • <strong>DCA {modo_txt}:</strong> {'Reparte el capital en ' + str(meses_dca) + ' meses' if modo_dca == 'capital_disponible' else 'Aporta ' + f'{aportacion_mensual:,.0f}' + ' cada mes'}. Aportación al {momento_txt.lower()}.<br>
-{intereses_nota}• <strong>Impuestos:</strong> IRPF 2024 sobre plusvalía al vender.<br>
+{intereses_nota}• <strong>Impuestos:</strong> IRPF sobre plusvalía al vender.<br>
 • <strong>Costes:</strong> {comision*100:.2f}% comisión + {slippage*100:.2f}% slippage por operación.
 </div>
 """, unsafe_allow_html=True)
