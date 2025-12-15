@@ -256,8 +256,18 @@ st.markdown("""
     .streamlit-expanderHeader {
         background-color: #1a1a2e !important;
         border-radius: 8px !important;
-        font-family: 'JetBrains Mono', monospace !important;
         color: #e2e8f0 !important;
+    }
+    
+    .streamlit-expanderHeader p {
+        font-family: 'JetBrains Mono', monospace !important;
+    }
+    
+    .streamlit-expanderContent {
+        background-color: #12121a !important;
+        border: 1px solid rgba(99, 102, 241, 0.2) !important;
+        border-top: none !important;
+        border-radius: 0 0 8px 8px !important;
     }
     
     /* Winner badge */
@@ -494,7 +504,7 @@ with st.sidebar:
         "Fecha inicio simulación",
         value=datetime(2010, 1, 1),
         min_value=datetime(1980, 1, 1),
-        max_value=datetime.now() - timedelta(days=365*horizonte)
+        max_value=datetime.now() - timedelta(days=365)
     )
 
 
@@ -699,7 +709,7 @@ try:
         if resultado_ls['desglose_impuestos']:
             with st.expander("📋 Desglose IRPF por tramos"):
                 for tramo, importe in resultado_ls['desglose_impuestos'].items():
-                    st.markdown(f"**Tramo {tramo}:** {importe:,.0f}€")
+                    st.write(f"Tramo {tramo}: {importe:,.0f}€")
     
     with tab2:
         col1, col2, col3, col4 = st.columns(4)
@@ -744,7 +754,7 @@ try:
         if resultado_dca['desglose_impuestos']:
             with st.expander("📋 Desglose IRPF por tramos"):
                 for tramo, importe in resultado_dca['desglose_impuestos'].items():
-                    st.markdown(f"**Tramo {tramo}:** {importe:,.0f}€")
+                    st.write(f"Tramo {tramo}: {importe:,.0f}€")
     
     st.markdown('<div class="separator"></div>', unsafe_allow_html=True)
     
