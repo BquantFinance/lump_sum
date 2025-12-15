@@ -362,14 +362,17 @@ def simular_dca_capital_disponible(
     """
     DCA Modo 1: Capital disponible desde el día 1.
     El capital pendiente genera intereses en monetario.
+    
+    IMPORTANTE: La curva de equity refleja la acumulación progresiva
+    de participaciones durante el período DCA.
     """
     aportacion = capital / meses_dca
     dias_entre = 21
     tasa_mensual = tasa_monetario / 12
-    
-    # Si aportación a final de mes, offset de ~21 días
     offset_dias = 0 if aportacion_inicio_mes else dias_entre
     
+    # Arrays para tracking
+    participaciones_acumuladas = np.zeros(len(precios))
     participaciones = 0.0
     capital_invertido_total = 0.0
     comisiones_compra = 0.0
@@ -380,12 +383,15 @@ def simular_dca_capital_disponible(
     num_compras = 0
     capital_pendiente = capital
     
+    # Índices de compra para tracking
+    indices_compra = []
+    
     for mes in range(meses_dca):
         idx = mes * dias_entre + offset_dias
         if idx >= len(precios):
             break
         
-        # Intereses del capital pendiente (antes de la aportación del mes)
+        # Intereses del capital pendiente
         if mes > 0 or not aportacion_inicio_mes:
             interes_mes = capital_pendiente * tasa_mensual
             intereses_monetario += interes_mes
@@ -404,14 +410,26 @@ def simular_dca_capital_disponible(
         num_compras += 1
         precios_compra.append(precio)
         cantidades_compra.append(nuevas_part)
+        indices_compra.append(idx)
+        
+        # Actualizar participaciones desde este punto hasta la siguiente compra
+        siguiente_idx = (mes + 1) * dias_entre + offset_dias
+        if siguiente_idx > len(precios):
+            siguiente_idx = len(precios)
+        participaciones_acumuladas[idx:siguiente_idx] = participaciones
     
-    # Intereses restantes si no se invirtió todo
+    # Rellenar el resto con las participaciones finales
+    if indices_compra:
+        ultimo_idx = indices_compra[-1]
+        participaciones_acumuladas[ultimo_idx:] = participaciones
+    
+    # Intereses restantes
     if capital_pendiente > 0:
         meses_restantes = meses_dca - num_compras
         intereses_monetario += capital_pendiente * tasa_mensual * meses_restantes
     
-    # EVOLUCIÓN
-    valores = participaciones * precios
+    # EVOLUCIÓN - ahora refleja acumulación progresiva
+    valores = pd.Series(participaciones_acumuladas * precios.values, index=precios.index)
     
     # VENTA
     valor_bruto_final = valores.iloc[-1]
@@ -431,7 +449,13 @@ def simular_dca_capital_disponible(
     años = dias / 365.25
     rentabilidad = (valor_neto / capital - 1) * 100
     cagr = calcular_cagr(capital, valor_neto, años)
-    max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores)
+    
+    # Max DD solo después de que se complete el DCA (cuando hay participaciones)
+    valores_post_dca = valores[valores > 0]
+    if len(valores_post_dca) > 1:
+        max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores_post_dca)
+    else:
+        max_dd, fecha_pico, fecha_valle = 0, precios.index[0], precios.index[0]
     
     precio_medio = sum(p * c for p, c in zip(precios_compra, cantidades_compra)) / sum(cantidades_compra) if cantidades_compra else 0
     
@@ -480,10 +504,15 @@ def simular_dca_aportacion_periodica(
     """
     DCA Modo 2: Aportación periódica (ej: del sueldo).
     NO hay coste de oportunidad porque el dinero no existe hasta que llega.
+    
+    IMPORTANTE: La curva de equity refleja la acumulación progresiva
+    de participaciones durante el período DCA.
     """
     dias_entre = 21
     offset_dias = 0 if aportacion_inicio_mes else dias_entre
     
+    # Arrays para tracking
+    participaciones_acumuladas = np.zeros(len(precios))
     participaciones = 0.0
     capital_invertido_total = 0.0
     comisiones_compra = 0.0
@@ -491,16 +520,14 @@ def simular_dca_aportacion_periodica(
     precios_compra = []
     cantidades_compra = []
     num_compras = 0
-    
-    # Track de valores a lo largo del tiempo
-    valores_historico = pd.Series(index=precios.index, dtype=float)
+    indices_compra = []
     
     for mes in range(meses_dca):
         idx = mes * dias_entre + offset_dias
         if idx >= len(precios):
             break
         
-        # Compra
+        # Compra con costes
         coste_op = aportacion_mensual * (comision + slippage)
         capital_efectivo = aportacion_mensual - coste_op
         precio = precios.iloc[idx]
@@ -513,9 +540,21 @@ def simular_dca_aportacion_periodica(
         num_compras += 1
         precios_compra.append(precio)
         cantidades_compra.append(nuevas_part)
+        indices_compra.append(idx)
+        
+        # Actualizar participaciones desde este punto hasta la siguiente compra
+        siguiente_idx = (mes + 1) * dias_entre + offset_dias
+        if siguiente_idx > len(precios):
+            siguiente_idx = len(precios)
+        participaciones_acumuladas[idx:siguiente_idx] = participaciones
     
-    # EVOLUCIÓN (valor de todas las participaciones acumuladas)
-    valores = participaciones * precios
+    # Rellenar el resto con las participaciones finales
+    if indices_compra:
+        ultimo_idx = indices_compra[-1]
+        participaciones_acumuladas[ultimo_idx:] = participaciones
+    
+    # EVOLUCIÓN - ahora refleja acumulación progresiva
+    valores = pd.Series(participaciones_acumuladas * precios.values, index=precios.index)
     
     # VENTA
     valor_bruto_final = valores.iloc[-1]
@@ -530,11 +569,15 @@ def simular_dca_aportacion_periodica(
     # MÉTRICAS
     dias = (precios.index[-1] - precios.index[0]).days
     años = dias / 365.25
-    
-    # Rentabilidad sobre capital aportado
     rentabilidad = (valor_neto / capital_invertido_total - 1) * 100
     cagr = calcular_cagr(capital_invertido_total, valor_neto, años)
-    max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores)
+    
+    # Max DD solo después de que se complete el DCA
+    valores_post_dca = valores[valores > 0]
+    if len(valores_post_dca) > 1:
+        max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores_post_dca)
+    else:
+        max_dd, fecha_pico, fecha_valle = 0, precios.index[0], precios.index[0]
     
     precio_medio = sum(p * c for p, c in zip(precios_compra, cantidades_compra)) / sum(cantidades_compra) if cantidades_compra else 0
     
@@ -957,29 +1000,64 @@ st.markdown('<div class="separator"></div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-header">📈 Evolución del patrimonio</div>', unsafe_allow_html=True)
 
-# Normalizar para comparar (% sobre capital invertido)
-rentabilidad_ls = (resultado_ls['valores'] / capital_ls - 1) * 100
-rentabilidad_dca = (resultado_dca['valores'] / resultado_dca['capital_total_aportado'] - 1) * 100
+# Toggle para tipo de gráfico
+vista_grafico = st.radio(
+    "Vista",
+    options=["absoluto", "porcentaje"],
+    format_func=lambda x: f"💰 Valor absoluto ({divisa})" if x == "absoluto" else "📊 Rentabilidad (%)",
+    horizontal=True,
+    label_visibility="collapsed"
+)
 
 fig = go.Figure()
 
-fig.add_trace(go.Scatter(
-    x=rentabilidad_ls.index, y=rentabilidad_ls.values,
-    fill='tozeroy', fillcolor='rgba(99, 102, 241, 0.15)',
-    line=dict(color='#818cf8', width=2.5),
-    name='Lump Sum',
-    hovertemplate='<b>LS</b><br>%{x|%Y-%m-%d}<br>%{y:.1f}%<extra></extra>'
-))
-
-fig.add_trace(go.Scatter(
-    x=rentabilidad_dca.index, y=rentabilidad_dca.values,
-    fill='tozeroy', fillcolor='rgba(251, 146, 60, 0.15)',
-    line=dict(color='#fb923c', width=2.5),
-    name='DCA',
-    hovertemplate='<b>DCA</b><br>%{x|%Y-%m-%d}<br>%{y:.1f}%<extra></extra>'
-))
-
-fig.add_hline(y=0, line_dash="dash", line_color="rgba(148, 163, 184, 0.5)")
+if vista_grafico == "absoluto":
+    # Valores absolutos
+    fig.add_trace(go.Scatter(
+        x=resultado_ls['valores'].index, y=resultado_ls['valores'].values,
+        fill='tozeroy', fillcolor='rgba(99, 102, 241, 0.15)',
+        line=dict(color='#818cf8', width=2.5),
+        name='Lump Sum',
+        hovertemplate='<b>LS</b><br>%{x|%Y-%m-%d}<br>%{y:,.0f} ' + divisa + '<extra></extra>'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=resultado_dca['valores'].index, y=resultado_dca['valores'].values,
+        fill='tozeroy', fillcolor='rgba(251, 146, 60, 0.15)',
+        line=dict(color='#fb923c', width=2.5),
+        name='DCA',
+        hovertemplate='<b>DCA</b><br>%{x|%Y-%m-%d}<br>%{y:,.0f} ' + divisa + '<extra></extra>'
+    ))
+    
+    y_title = f"Valor ({divisa})"
+    y_suffix = ""
+else:
+    # Rentabilidad % (normalizada sobre capital aportado hasta ese momento para DCA)
+    rentabilidad_ls = (resultado_ls['valores'] / capital_ls - 1) * 100
+    
+    # Para DCA, calcular rentabilidad sobre capital aportado hasta cada punto
+    # Esto es más complejo, simplificamos mostrando % sobre capital total
+    rentabilidad_dca = (resultado_dca['valores'] / resultado_dca['capital_total_aportado'] - 1) * 100
+    
+    fig.add_trace(go.Scatter(
+        x=rentabilidad_ls.index, y=rentabilidad_ls.values,
+        fill='tozeroy', fillcolor='rgba(99, 102, 241, 0.15)',
+        line=dict(color='#818cf8', width=2.5),
+        name='Lump Sum',
+        hovertemplate='<b>LS</b><br>%{x|%Y-%m-%d}<br>%{y:.1f}%<extra></extra>'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=rentabilidad_dca.index, y=rentabilidad_dca.values,
+        fill='tozeroy', fillcolor='rgba(251, 146, 60, 0.15)',
+        line=dict(color='#fb923c', width=2.5),
+        name='DCA',
+        hovertemplate='<b>DCA</b><br>%{x|%Y-%m-%d}<br>%{y:.1f}%<extra></extra>'
+    ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(148, 163, 184, 0.5)")
+    y_title = "Rentabilidad (%)"
+    y_suffix = "%"
 
 fig.update_layout(
     template="plotly_dark",
@@ -987,7 +1065,7 @@ fig.update_layout(
     font=dict(family="JetBrains Mono", color="#e2e8f0"),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
     xaxis=dict(showgrid=True, gridcolor='rgba(99, 102, 241, 0.1)'),
-    yaxis=dict(showgrid=True, gridcolor='rgba(99, 102, 241, 0.1)', title="Rentabilidad (%)", ticksuffix="%"),
+    yaxis=dict(showgrid=True, gridcolor='rgba(99, 102, 241, 0.1)', title=y_title, ticksuffix=y_suffix),
     margin=dict(l=60, r=20, t=40, b=40),
     height=450, hovermode='x unified'
 )
