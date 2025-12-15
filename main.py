@@ -269,7 +269,10 @@ def calcular_impuestos_españa(plusvalia: float) -> tuple[float, dict]:
 
 
 def calcular_max_drawdown(serie: pd.Series) -> tuple[float, datetime, datetime]:
-    """Calcula Maximum Drawdown."""
+    """Calcula Maximum Drawdown sobre una serie."""
+    if len(serie) < 2 or serie.iloc[0] == 0:
+        return 0.0, serie.index[0], serie.index[0]
+    
     rolling_max = serie.expanding().max()
     drawdowns = (serie - rolling_max) / rolling_max
     max_dd = drawdowns.min()
@@ -280,9 +283,42 @@ def calcular_max_drawdown(serie: pd.Series) -> tuple[float, datetime, datetime]:
 
 def calcular_cagr(valor_inicial: float, valor_final: float, años: float) -> float:
     """Calcula CAGR."""
-    if valor_inicial <= 0 or años <= 0:
+    if valor_inicial <= 0 or años <= 0 or valor_final <= 0:
         return 0.0
     return ((valor_final / valor_inicial) ** (1 / años) - 1) * 100
+
+
+def calcular_twr(valores: pd.Series, flujos: list, indices_flujo: list) -> float:
+    """
+    Calcula Time-Weighted Return (TWR).
+    Elimina el efecto del timing de los flujos de caja.
+    """
+    if len(flujos) == 0 or len(valores) < 2:
+        return 0.0
+    
+    retornos_periodo = []
+    valor_inicio_periodo = valores.iloc[0]
+    
+    for i, idx in enumerate(indices_flujo):
+        if idx > 0 and idx < len(valores):
+            valor_antes_flujo = valores.iloc[idx]
+            if valor_inicio_periodo > 0:
+                retorno = valor_antes_flujo / valor_inicio_periodo
+                retornos_periodo.append(retorno)
+            valor_inicio_periodo = valores.iloc[idx]
+    
+    # Último período hasta el final
+    if valor_inicio_periodo > 0:
+        retorno_final = valores.iloc[-1] / valor_inicio_periodo
+        retornos_periodo.append(retorno_final)
+    
+    if not retornos_periodo:
+        return 0.0
+    
+    # TWR = producto de (1 + r) para cada período - 1
+    import numpy as np
+    twr = np.prod(retornos_periodo) - 1
+    return twr * 100
 
 
 def simular_lump_sum(
@@ -319,16 +355,26 @@ def simular_lump_sum(
     cagr = calcular_cagr(capital, valor_neto, años)
     max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores)
     
+    # Volatilidad anualizada
+    retornos_diarios = valores.pct_change().dropna()
+    volatilidad = retornos_diarios.std() * np.sqrt(252) * 100 if len(retornos_diarios) > 1 else 0
+    
+    # Sharpe (asumiendo rf = 0 para simplificar)
+    sharpe = (cagr / volatilidad) if volatilidad > 0 else 0
+    
     return {
         'valores': valores,
-        'valores_solo_activo': valores,  # En LS son iguales (todo invertido desde día 1)
+        'valores_solo_activo': valores,
         'valor_bruto': valor_bruto_final,
+        'valor_tras_venta': valor_tras_venta,
         'valor_neto': valor_neto,
         'rentabilidad': rentabilidad,
         'cagr': cagr,
         'max_drawdown': max_dd,
         'fecha_pico_dd': fecha_pico,
         'fecha_valle_dd': fecha_valle,
+        'volatilidad': volatilidad,
+        'sharpe': sharpe,
         'base_coste': capital,
         'plusvalia': plusvalia,
         'impuestos': impuestos,
@@ -362,21 +408,17 @@ def simular_dca_capital_disponible(
     """
     DCA Modo 1: Capital disponible desde el día 1.
     El capital pendiente genera intereses en monetario.
-    
-    IMPORTANTE: La curva de equity muestra el PATRIMONIO TOTAL:
-    - Valor de participaciones acumuladas
-    - Capital pendiente de invertir
-    - Intereses acumulados del monetario
     """
     aportacion = capital / meses_dca
     dias_entre = 21
-    tasa_diaria = tasa_monetario / 252  # Tasa diaria de trading
+    tasa_diaria = tasa_monetario / 252
     offset_dias = 0 if aportacion_inicio_mes else dias_entre
     
     # Arrays para tracking diario
     participaciones_acumuladas = np.zeros(len(precios))
     capital_pendiente_diario = np.zeros(len(precios))
     intereses_acumulados_diario = np.zeros(len(precios))
+    capital_invertido_acumulado = np.zeros(len(precios))
     
     participaciones = 0.0
     capital_invertido_total = 0.0
@@ -390,15 +432,16 @@ def simular_dca_capital_disponible(
     
     # Índices de compra
     indices_compra = []
-    
     for mes in range(meses_dca):
         idx = mes * dias_entre + offset_dias
         if idx >= len(precios):
             break
         indices_compra.append(idx)
     
+    # Encontrar el último día del período DCA
+    ultimo_dia_dca = indices_compra[-1] if indices_compra else 0
+    
     # Simular día a día
-    ultimo_idx_compra = 0
     proxima_compra_idx = 0
     
     for dia in range(len(precios)):
@@ -409,7 +452,6 @@ def simular_dca_capital_disponible(
         
         # ¿Toca compra hoy?
         if proxima_compra_idx < len(indices_compra) and dia == indices_compra[proxima_compra_idx]:
-            # Compra
             coste_op = aportacion * (comision + slippage)
             capital_efectivo = aportacion - coste_op
             precio = precios.iloc[dia]
@@ -429,16 +471,15 @@ def simular_dca_capital_disponible(
         participaciones_acumuladas[dia] = participaciones
         capital_pendiente_diario[dia] = capital_pendiente
         intereses_acumulados_diario[dia] = intereses_acumulados
+        capital_invertido_acumulado[dia] = capital_invertido_total
     
-    # EVOLUCIÓN - PATRIMONIO TOTAL = participaciones + cash + intereses
+    # EVOLUCIÓN
     valor_participaciones = pd.Series(participaciones_acumuladas * precios.values, index=precios.index)
     valor_cash = pd.Series(capital_pendiente_diario, index=precios.index)
     valor_intereses = pd.Series(intereses_acumulados_diario, index=precios.index)
     
-    # Patrimonio total (antes de venta e impuestos)
+    # Patrimonio total
     valores = valor_participaciones + valor_cash + valor_intereses
-    
-    # Para el gráfico también guardamos solo las participaciones (útil para comparar)
     valores_solo_activo = valor_participaciones
     
     # VENTA
@@ -446,7 +487,6 @@ def simular_dca_capital_disponible(
     coste_venta = valor_bruto_final * (comision + slippage)
     valor_tras_venta = valor_bruto_final - coste_venta
     
-    # Intereses totales al final
     intereses_monetario = intereses_acumulados
     
     # IMPUESTOS
@@ -463,18 +503,28 @@ def simular_dca_capital_disponible(
     rentabilidad = (valor_neto / capital - 1) * 100
     cagr = calcular_cagr(capital, valor_neto, años)
     
-    # Max DD sobre patrimonio total
-    valores_positivos = valores[valores > 0]
-    if len(valores_positivos) > 1:
-        max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores_positivos)
+    # MAX DRAWDOWN - Calculado SOLO sobre participaciones después del período DCA
+    # Durante el DCA el cash "protege" artificialmente el DD, lo cual no es comparable con LS
+    valores_post_dca = valores_solo_activo.iloc[ultimo_dia_dca:]
+    if len(valores_post_dca) > 1 and valores_post_dca.iloc[0] > 0:
+        max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores_post_dca)
     else:
-        max_dd, fecha_pico, fecha_valle = 0, precios.index[0], precios.index[0]
+        max_dd, fecha_pico, fecha_valle = 0.0, precios.index[0], precios.index[0]
+    
+    # Volatilidad post-DCA (comparable con LS)
+    if len(valores_post_dca) > 1:
+        retornos_diarios = valores_post_dca.pct_change().dropna()
+        volatilidad = retornos_diarios.std() * np.sqrt(252) * 100 if len(retornos_diarios) > 1 else 0
+    else:
+        volatilidad = 0
+    
+    sharpe = (cagr / volatilidad) if volatilidad > 0 else 0
     
     precio_medio = sum(p * c for p, c in zip(precios_compra, cantidades_compra)) / sum(cantidades_compra) if cantidades_compra else 0
     
     return {
-        'valores': valores,  # Patrimonio total
-        'valores_solo_activo': valores_solo_activo,  # Solo participaciones
+        'valores': valores,
+        'valores_solo_activo': valores_solo_activo,
         'valor_bruto': valor_bruto_final,
         'valor_tras_venta': valor_tras_venta,
         'valor_neto': valor_neto,
@@ -483,6 +533,8 @@ def simular_dca_capital_disponible(
         'max_drawdown': max_dd,
         'fecha_pico_dd': fecha_pico,
         'fecha_valle_dd': fecha_valle,
+        'volatilidad': volatilidad,
+        'sharpe': sharpe,
         'base_coste': capital_invertido_total,
         'plusvalia': plusvalia,
         'impuestos': impuestos_totales,
@@ -499,6 +551,7 @@ def simular_dca_capital_disponible(
         'num_operaciones': num_compras + 1,
         'precio_medio': precio_medio,
         'años': años,
+        'dias_dca': ultimo_dia_dca,
         'intereses_monetario': intereses_monetario,
         'capital_invertido': capital_invertido_total,
         'capital_total_aportado': capital,
@@ -518,9 +571,6 @@ def simular_dca_aportacion_periodica(
     """
     DCA Modo 2: Aportación periódica (ej: del sueldo).
     NO hay coste de oportunidad porque el dinero no existe hasta que llega.
-    
-    IMPORTANTE: La curva de equity refleja la acumulación progresiva
-    de participaciones durante el período DCA.
     """
     dias_entre = 21
     offset_dias = 0 if aportacion_inicio_mes else dias_entre
@@ -563,11 +613,11 @@ def simular_dca_aportacion_periodica(
         participaciones_acumuladas[idx:siguiente_idx] = participaciones
     
     # Rellenar el resto con las participaciones finales
+    ultimo_dia_dca = indices_compra[-1] if indices_compra else 0
     if indices_compra:
-        ultimo_idx = indices_compra[-1]
-        participaciones_acumuladas[ultimo_idx:] = participaciones
+        participaciones_acumuladas[ultimo_dia_dca:] = participaciones
     
-    # EVOLUCIÓN - ahora refleja acumulación progresiva
+    # EVOLUCIÓN
     valores = pd.Series(participaciones_acumuladas * precios.values, index=precios.index)
     
     # VENTA
@@ -586,12 +636,21 @@ def simular_dca_aportacion_periodica(
     rentabilidad = (valor_neto / capital_invertido_total - 1) * 100
     cagr = calcular_cagr(capital_invertido_total, valor_neto, años)
     
-    # Max DD solo después de que se complete el DCA
-    valores_post_dca = valores[valores > 0]
-    if len(valores_post_dca) > 1:
+    # Max DD calculado SOLO desde el último día del DCA (comparable con LS)
+    valores_post_dca = valores.iloc[ultimo_dia_dca:]
+    if len(valores_post_dca) > 1 and valores_post_dca.iloc[0] > 0:
         max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores_post_dca)
     else:
-        max_dd, fecha_pico, fecha_valle = 0, precios.index[0], precios.index[0]
+        max_dd, fecha_pico, fecha_valle = 0.0, precios.index[0], precios.index[0]
+    
+    # Volatilidad post-DCA
+    if len(valores_post_dca) > 1:
+        retornos_diarios = valores_post_dca.pct_change().dropna()
+        volatilidad = retornos_diarios.std() * np.sqrt(252) * 100 if len(retornos_diarios) > 1 else 0
+    else:
+        volatilidad = 0
+    
+    sharpe = (cagr / volatilidad) if volatilidad > 0 else 0
     
     precio_medio = sum(p * c for p, c in zip(precios_compra, cantidades_compra)) / sum(cantidades_compra) if cantidades_compra else 0
     
@@ -606,6 +665,8 @@ def simular_dca_aportacion_periodica(
         'max_drawdown': max_dd,
         'fecha_pico_dd': fecha_pico,
         'fecha_valle_dd': fecha_valle,
+        'volatilidad': volatilidad,
+        'sharpe': sharpe,
         'base_coste': capital_invertido_total,
         'plusvalia': plusvalia,
         'impuestos': impuestos,
@@ -622,6 +683,7 @@ def simular_dca_aportacion_periodica(
         'num_operaciones': num_compras + 1,
         'precio_medio': precio_medio,
         'años': años,
+        'dias_dca': ultimo_dia_dca,
         'intereses_monetario': 0,
         'capital_invertido': capital_invertido_total,
         'capital_total_aportado': capital_invertido_total,
@@ -958,7 +1020,7 @@ with col3:
 </div>
 """, unsafe_allow_html=True)
 
-# Métricas secundarias
+# Métricas secundarias - Riesgo
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
@@ -973,7 +1035,7 @@ with col1:
 with col2:
     st.markdown(f"""
 <div class="metric-card">
-<div class="metric-title">MAX DD DCA</div>
+<div class="metric-title">MAX DD DCA *</div>
 <div class="metric-value metric-value-red">{resultado_dca['max_drawdown']:.1f}%</div>
 <div class="metric-subtitle">{resultado_dca['fecha_valle_dd'].strftime('%Y-%m-%d')}</div>
 </div>
@@ -982,20 +1044,62 @@ with col2:
 with col3:
     st.markdown(f"""
 <div class="metric-card">
-<div class="metric-title">PRECIO MEDIO LS</div>
-<div class="metric-value metric-value-blue">{resultado_ls['precio_medio']:.2f}</div>
-<div class="metric-subtitle">1 compra</div>
+<div class="metric-title">VOLATILIDAD LS</div>
+<div class="metric-value metric-value-amber">{resultado_ls['volatilidad']:.1f}%</div>
+<div class="metric-subtitle">anualizada</div>
 </div>
 """, unsafe_allow_html=True)
 
 with col4:
     st.markdown(f"""
 <div class="metric-card">
+<div class="metric-title">VOLATILIDAD DCA</div>
+<div class="metric-value metric-value-amber">{resultado_dca['volatilidad']:.1f}%</div>
+<div class="metric-subtitle">anualizada (post-DCA)</div>
+</div>
+""", unsafe_allow_html=True)
+
+# Métricas secundarias - Precios y Sharpe
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.markdown(f"""
+<div class="metric-card">
+<div class="metric-title">PRECIO MEDIO LS</div>
+<div class="metric-value metric-value-blue">{resultado_ls['precio_medio']:.2f}</div>
+<div class="metric-subtitle">1 compra</div>
+</div>
+""", unsafe_allow_html=True)
+
+with col2:
+    st.markdown(f"""
+<div class="metric-card">
 <div class="metric-title">PRECIO MEDIO DCA</div>
-<div class="metric-value metric-value-amber">{resultado_dca['precio_medio']:.2f}</div>
+<div class="metric-value metric-value-blue">{resultado_dca['precio_medio']:.2f}</div>
 <div class="metric-subtitle">{resultado_dca['num_operaciones']-1} compras</div>
 </div>
 """, unsafe_allow_html=True)
+
+with col3:
+    st.markdown(f"""
+<div class="metric-card">
+<div class="metric-title">SHARPE LS</div>
+<div class="metric-value metric-value-green">{resultado_ls['sharpe']:.2f}</div>
+<div class="metric-subtitle">CAGR / Vol</div>
+</div>
+""", unsafe_allow_html=True)
+
+with col4:
+    st.markdown(f"""
+<div class="metric-card">
+<div class="metric-title">SHARPE DCA</div>
+<div class="metric-value metric-value-green">{resultado_dca['sharpe']:.2f}</div>
+<div class="metric-subtitle">CAGR / Vol</div>
+</div>
+""", unsafe_allow_html=True)
+
+# Nota sobre Max DD
+st.caption("* Max Drawdown DCA calculado desde el último día del período de aportaciones para comparación justa con LS.")
 
 # Info monetario
 if modo_dca == "capital_disponible" and resultado_dca['intereses_monetario'] > 0:
