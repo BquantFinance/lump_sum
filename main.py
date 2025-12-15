@@ -1015,19 +1015,86 @@ st.markdown('<div class="separator"></div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-header">📈 Evolución del patrimonio</div>', unsafe_allow_html=True)
 
-# Toggle para tipo de gráfico
-vista_grafico = st.radio(
-    "Vista",
-    options=["absoluto", "porcentaje"],
-    format_func=lambda x: f"💰 Valor absoluto ({divisa})" if x == "absoluto" else "📊 Rentabilidad (%)",
-    horizontal=True,
-    label_visibility="collapsed"
-)
+# Opciones de visualización
+col_v1, col_v2, col_v3 = st.columns(3)
+with col_v1:
+    vista_grafico = st.radio(
+        "Escala",
+        options=["absoluto", "porcentaje"],
+        format_func=lambda x: f"💰 Absoluto" if x == "absoluto" else "📊 %",
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+with col_v2:
+    if modo_dca == "capital_disponible":
+        vista_patrimonio = st.radio(
+            "DCA muestra",
+            options=["total", "solo_activo"],
+            format_func=lambda x: "🏦 Total (activo+cash)" if x == "total" else "📈 Solo activo",
+            horizontal=True,
+            label_visibility="collapsed",
+            help="Total = participaciones + cash pendiente + intereses. Solo activo = solo participaciones."
+        )
+    else:
+        vista_patrimonio = "total"
+with col_v3:
+    mostrar_sin_costes = st.checkbox("📉 Línea sin costes", value=False)
+
+# Seleccionar qué valores DCA mostrar
+if vista_patrimonio == "solo_activo" and modo_dca == "capital_disponible":
+    valores_dca_mostrar = resultado_dca['valores_solo_activo']
+else:
+    valores_dca_mostrar = resultado_dca['valores']
+
+# Calcular curvas sin costes para referencia
+if mostrar_sin_costes:
+    # LS sin costes
+    participaciones_ls_sin = capital_ls / precios.iloc[0]
+    valores_ls_sin = participaciones_ls_sin * precios
+    
+    # DCA sin costes
+    if modo_dca == "capital_disponible":
+        aport = capital_dca / meses_dca
+    else:
+        aport = aportacion_mensual
+    
+    dias_entre = 21
+    offset = 0 if aportacion_inicio else dias_entre
+    part_sin = 0.0
+    part_acum_sin = np.zeros(len(precios))
+    cash_sin = np.zeros(len(precios))
+    cash_pend = capital_dca if modo_dca == "capital_disponible" else 0
+    
+    for mes in range(meses_dca):
+        idx = mes * dias_entre + offset
+        if idx >= len(precios):
+            break
+        
+        # Actualizar cash hasta este punto
+        if modo_dca == "capital_disponible":
+            cash_sin[:idx] = cash_pend
+        
+        part_sin += aport / precios.iloc[idx]  # Sin costes = aportación completa
+        cash_pend -= aport
+        
+        sig = min((mes + 1) * dias_entre + offset, len(precios))
+        part_acum_sin[idx:sig] = part_sin
+    
+    if len(part_acum_sin) > 0:
+        part_acum_sin[idx:] = part_sin
+        if modo_dca == "capital_disponible":
+            cash_sin[idx:] = 0
+    
+    valores_dca_sin_activo = pd.Series(part_acum_sin * precios.values, index=precios.index)
+    
+    if vista_patrimonio == "total" and modo_dca == "capital_disponible":
+        valores_dca_sin = valores_dca_sin_activo + pd.Series(cash_sin, index=precios.index)
+    else:
+        valores_dca_sin = valores_dca_sin_activo
 
 fig = go.Figure()
 
 if vista_grafico == "absoluto":
-    # Valores absolutos
     fig.add_trace(go.Scatter(
         x=resultado_ls['valores'].index, y=resultado_ls['valores'].values,
         fill='tozeroy', fillcolor='rgba(99, 102, 241, 0.15)',
@@ -1037,22 +1104,33 @@ if vista_grafico == "absoluto":
     ))
     
     fig.add_trace(go.Scatter(
-        x=resultado_dca['valores'].index, y=resultado_dca['valores'].values,
+        x=valores_dca_mostrar.index, y=valores_dca_mostrar.values,
         fill='tozeroy', fillcolor='rgba(251, 146, 60, 0.15)',
         line=dict(color='#fb923c', width=2.5),
         name='DCA',
         hovertemplate='<b>DCA</b><br>%{x|%Y-%m-%d}<br>%{y:,.0f} ' + divisa + '<extra></extra>'
     ))
     
+    if mostrar_sin_costes:
+        fig.add_trace(go.Scatter(
+            x=valores_ls_sin.index, y=valores_ls_sin.values,
+            line=dict(color='#818cf8', width=1.5, dash='dot'),
+            name='LS sin costes',
+            hovertemplate='<b>LS sin costes</b><br>%{x|%Y-%m-%d}<br>%{y:,.0f}<extra></extra>'
+        ))
+        fig.add_trace(go.Scatter(
+            x=valores_dca_sin.index, y=valores_dca_sin.values,
+            line=dict(color='#fb923c', width=1.5, dash='dot'),
+            name='DCA sin costes',
+            hovertemplate='<b>DCA sin costes</b><br>%{x|%Y-%m-%d}<br>%{y:,.0f}<extra></extra>'
+        ))
+    
     y_title = f"Valor ({divisa})"
     y_suffix = ""
 else:
-    # Rentabilidad % (normalizada sobre capital aportado hasta ese momento para DCA)
     rentabilidad_ls = (resultado_ls['valores'] / capital_ls - 1) * 100
-    
-    # Para DCA, calcular rentabilidad sobre capital aportado hasta cada punto
-    # Esto es más complejo, simplificamos mostrando % sobre capital total
-    rentabilidad_dca = (resultado_dca['valores'] / resultado_dca['capital_total_aportado'] - 1) * 100
+    cap_ref = capital_dca if modo_dca == "capital_disponible" else resultado_dca['capital_total_aportado']
+    rentabilidad_dca = (valores_dca_mostrar / cap_ref - 1) * 100
     
     fig.add_trace(go.Scatter(
         x=rentabilidad_ls.index, y=rentabilidad_ls.values,
@@ -1070,6 +1148,21 @@ else:
         hovertemplate='<b>DCA</b><br>%{x|%Y-%m-%d}<br>%{y:.1f}%<extra></extra>'
     ))
     
+    if mostrar_sin_costes:
+        rent_ls_sin = (valores_ls_sin / capital_ls - 1) * 100
+        rent_dca_sin = (valores_dca_sin / cap_ref - 1) * 100
+        
+        fig.add_trace(go.Scatter(
+            x=rent_ls_sin.index, y=rent_ls_sin.values,
+            line=dict(color='#818cf8', width=1.5, dash='dot'),
+            name='LS sin costes'
+        ))
+        fig.add_trace(go.Scatter(
+            x=rent_dca_sin.index, y=rent_dca_sin.values,
+            line=dict(color='#fb923c', width=1.5, dash='dot'),
+            name='DCA sin costes'
+        ))
+    
     fig.add_hline(y=0, line_dash="dash", line_color="rgba(148, 163, 184, 0.5)")
     y_title = "Rentabilidad (%)"
     y_suffix = "%"
@@ -1086,6 +1179,16 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
+# Mostrar impacto de costes en números
+coste_total_pct = (comision + slippage) * 100 * 2  # Ida y vuelta
+st.markdown(f"""
+<div class="info-box">
+💸 <strong>Costes de transacción ({coste_total_pct:.2f}% ida+vuelta):</strong><br>
+• LS: {resultado_ls['costes_transaccion']:,.0f} {divisa} ({resultado_ls['costes_transaccion']/resultado_ls['valor_bruto']*100:.3f}% del valor final)<br>
+• DCA: {resultado_dca['costes_transaccion']:,.0f} {divisa} ({resultado_dca['costes_transaccion']/resultado_dca['valor_bruto']*100:.3f}% del valor final) — {resultado_dca['num_operaciones']} operaciones
+</div>
+""", unsafe_allow_html=True)
 
 st.markdown('<div class="separator"></div>', unsafe_allow_html=True)
 
