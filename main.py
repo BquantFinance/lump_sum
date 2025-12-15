@@ -79,10 +79,24 @@ st.markdown("""
         font-weight: 700 !important;
     }
     
-    /* Text */
-    p, span, label, .stMarkdown {
+    /* Text - exclude Material Icons */
+    p, label, .stMarkdown {
         font-family: 'JetBrains Mono', monospace !important;
         color: #cbd5e1;
+    }
+    
+    /* Don't override font for icon elements */
+    span:not([data-testid="stIconMaterial"]) {
+        font-family: 'JetBrains Mono', monospace !important;
+        color: #cbd5e1;
+    }
+    
+    /* Preserve Material Icons font */
+    [data-testid="stIconMaterial"], 
+    [data-testid="collapsedControl"],
+    .material-symbols-rounded,
+    .material-icons {
+        font-family: 'Material Symbols Rounded', 'Material Icons' !important;
     }
     
     /* Metrics containers */
