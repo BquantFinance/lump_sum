@@ -405,8 +405,8 @@ def simular_estrategia(precios, capital, comision, slippage, meses_dca=None):
 @st.cache_data(ttl=3600)
 def descargar_datos(ticker, fecha_inicio):
     """Descarga datos con caché."""
-    data = yf.download(ticker, start=fecha_inicio, progress=False)
-    return data['Adj Close'].dropna()
+    data = yf.download(ticker, start=fecha_inicio, progress=False, multi_level_index=False)
+    return data['Close'].dropna()
 
 
 # =============================================================================
