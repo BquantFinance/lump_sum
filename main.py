@@ -5,7 +5,7 @@ Comparativa realista con:
 - Dos modos DCA: Capital disponible vs Aportación periódica
 - Opción de aportación a principio o final de mes
 - Coste de oportunidad (solo modo capital disponible)
-- Ticker libre + IRPF España 
+- Ticker libre + IRPF España 2024
 
 Autor: BQuant Finance
 """
@@ -321,8 +321,8 @@ def simular_lump_sum(
     
     return {
         'valores': valores,
+        'valores_solo_activo': valores,  # En LS son iguales (todo invertido desde día 1)
         'valor_bruto': valor_bruto_final,
-        'valor_tras_venta': valor_tras_venta,
         'valor_neto': valor_neto,
         'rentabilidad': rentabilidad,
         'cagr': cagr,
@@ -363,78 +363,91 @@ def simular_dca_capital_disponible(
     DCA Modo 1: Capital disponible desde el día 1.
     El capital pendiente genera intereses en monetario.
     
-    IMPORTANTE: La curva de equity refleja la acumulación progresiva
-    de participaciones durante el período DCA.
+    IMPORTANTE: La curva de equity muestra el PATRIMONIO TOTAL:
+    - Valor de participaciones acumuladas
+    - Capital pendiente de invertir
+    - Intereses acumulados del monetario
     """
     aportacion = capital / meses_dca
     dias_entre = 21
-    tasa_mensual = tasa_monetario / 12
+    tasa_diaria = tasa_monetario / 252  # Tasa diaria de trading
     offset_dias = 0 if aportacion_inicio_mes else dias_entre
     
-    # Arrays para tracking
+    # Arrays para tracking diario
     participaciones_acumuladas = np.zeros(len(precios))
+    capital_pendiente_diario = np.zeros(len(precios))
+    intereses_acumulados_diario = np.zeros(len(precios))
+    
     participaciones = 0.0
     capital_invertido_total = 0.0
     comisiones_compra = 0.0
     slippage_compra = 0.0
-    intereses_monetario = 0.0
+    intereses_acumulados = 0.0
     precios_compra = []
     cantidades_compra = []
     num_compras = 0
     capital_pendiente = capital
     
-    # Índices de compra para tracking
+    # Índices de compra
     indices_compra = []
     
     for mes in range(meses_dca):
         idx = mes * dias_entre + offset_dias
         if idx >= len(precios):
             break
-        
-        # Intereses del capital pendiente
-        if mes > 0 or not aportacion_inicio_mes:
-            interes_mes = capital_pendiente * tasa_mensual
-            intereses_monetario += interes_mes
-        
-        # Compra
-        coste_op = aportacion * (comision + slippage)
-        capital_efectivo = aportacion - coste_op
-        precio = precios.iloc[idx]
-        nuevas_part = capital_efectivo / precio
-        
-        participaciones += nuevas_part
-        capital_invertido_total += aportacion
-        capital_pendiente -= aportacion
-        comisiones_compra += aportacion * comision
-        slippage_compra += aportacion * slippage
-        num_compras += 1
-        precios_compra.append(precio)
-        cantidades_compra.append(nuevas_part)
         indices_compra.append(idx)
+    
+    # Simular día a día
+    ultimo_idx_compra = 0
+    proxima_compra_idx = 0
+    
+    for dia in range(len(precios)):
+        # Acumular intereses diarios sobre capital pendiente
+        if capital_pendiente > 0:
+            interes_dia = capital_pendiente * tasa_diaria
+            intereses_acumulados += interes_dia
         
-        # Actualizar participaciones desde este punto hasta la siguiente compra
-        siguiente_idx = (mes + 1) * dias_entre + offset_dias
-        if siguiente_idx > len(precios):
-            siguiente_idx = len(precios)
-        participaciones_acumuladas[idx:siguiente_idx] = participaciones
+        # ¿Toca compra hoy?
+        if proxima_compra_idx < len(indices_compra) and dia == indices_compra[proxima_compra_idx]:
+            # Compra
+            coste_op = aportacion * (comision + slippage)
+            capital_efectivo = aportacion - coste_op
+            precio = precios.iloc[dia]
+            nuevas_part = capital_efectivo / precio
+            
+            participaciones += nuevas_part
+            capital_invertido_total += aportacion
+            capital_pendiente -= aportacion
+            comisiones_compra += aportacion * comision
+            slippage_compra += aportacion * slippage
+            num_compras += 1
+            precios_compra.append(precio)
+            cantidades_compra.append(nuevas_part)
+            proxima_compra_idx += 1
+        
+        # Guardar estado del día
+        participaciones_acumuladas[dia] = participaciones
+        capital_pendiente_diario[dia] = capital_pendiente
+        intereses_acumulados_diario[dia] = intereses_acumulados
     
-    # Rellenar el resto con las participaciones finales
-    if indices_compra:
-        ultimo_idx = indices_compra[-1]
-        participaciones_acumuladas[ultimo_idx:] = participaciones
+    # EVOLUCIÓN - PATRIMONIO TOTAL = participaciones + cash + intereses
+    valor_participaciones = pd.Series(participaciones_acumuladas * precios.values, index=precios.index)
+    valor_cash = pd.Series(capital_pendiente_diario, index=precios.index)
+    valor_intereses = pd.Series(intereses_acumulados_diario, index=precios.index)
     
-    # Intereses restantes
-    if capital_pendiente > 0:
-        meses_restantes = meses_dca - num_compras
-        intereses_monetario += capital_pendiente * tasa_mensual * meses_restantes
+    # Patrimonio total (antes de venta e impuestos)
+    valores = valor_participaciones + valor_cash + valor_intereses
     
-    # EVOLUCIÓN - ahora refleja acumulación progresiva
-    valores = pd.Series(participaciones_acumuladas * precios.values, index=precios.index)
+    # Para el gráfico también guardamos solo las participaciones (útil para comparar)
+    valores_solo_activo = valor_participaciones
     
     # VENTA
-    valor_bruto_final = valores.iloc[-1]
+    valor_bruto_final = valor_participaciones.iloc[-1]
     coste_venta = valor_bruto_final * (comision + slippage)
     valor_tras_venta = valor_bruto_final - coste_venta
+    
+    # Intereses totales al final
+    intereses_monetario = intereses_acumulados
     
     # IMPUESTOS
     plusvalia = valor_tras_venta - capital_invertido_total
@@ -450,17 +463,18 @@ def simular_dca_capital_disponible(
     rentabilidad = (valor_neto / capital - 1) * 100
     cagr = calcular_cagr(capital, valor_neto, años)
     
-    # Max DD solo después de que se complete el DCA (cuando hay participaciones)
-    valores_post_dca = valores[valores > 0]
-    if len(valores_post_dca) > 1:
-        max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores_post_dca)
+    # Max DD sobre patrimonio total
+    valores_positivos = valores[valores > 0]
+    if len(valores_positivos) > 1:
+        max_dd, fecha_pico, fecha_valle = calcular_max_drawdown(valores_positivos)
     else:
         max_dd, fecha_pico, fecha_valle = 0, precios.index[0], precios.index[0]
     
     precio_medio = sum(p * c for p, c in zip(precios_compra, cantidades_compra)) / sum(cantidades_compra) if cantidades_compra else 0
     
     return {
-        'valores': valores,
+        'valores': valores,  # Patrimonio total
+        'valores_solo_activo': valores_solo_activo,  # Solo participaciones
         'valor_bruto': valor_bruto_final,
         'valor_tras_venta': valor_tras_venta,
         'valor_neto': valor_neto,
@@ -583,6 +597,7 @@ def simular_dca_aportacion_periodica(
     
     return {
         'valores': valores,
+        'valores_solo_activo': valores,  # En este modo son iguales (no hay cash pendiente)
         'valor_bruto': valor_bruto_final,
         'valor_tras_venta': valor_tras_venta,
         'valor_neto': valor_neto,
@@ -812,7 +827,7 @@ No hay coste de oportunidad porque el dinero no existe hasta que llega.</small>
     
     st.markdown('<div class="separator"></div>', unsafe_allow_html=True)
     
-    with st.expander("ℹ️ Tramos IRPF"):
+    with st.expander("ℹ️ Tramos IRPF 2024"):
         st.markdown("""
 **Base del Ahorro:**
 - Hasta 6.000€: **19%**
@@ -832,7 +847,7 @@ st.markdown("""
 Lump Sum vs Dollar Cost Averaging
 </h1>
 <p style="color: #64748b; font-size: 1rem; margin-bottom: 16px;">
-Comparativa realista con dos modos DCA e impuestos IRPF España
+Comparativa realista con dos modos DCA e impuestos IRPF España 2024
 </p>
 """, unsafe_allow_html=True)
 
@@ -1348,7 +1363,7 @@ st.markdown(f"""
 <strong>ℹ️ Metodología:</strong><br>
 • <strong>Lump Sum:</strong> Invierte todo el día 1, vende al final.<br>
 • <strong>DCA {modo_txt}:</strong> {'Reparte el capital en ' + str(meses_dca) + ' meses' if modo_dca == 'capital_disponible' else 'Aporta ' + f'{aportacion_mensual:,.0f}' + ' cada mes'}. Aportación al {momento_txt.lower()}.<br>
-{intereses_nota}• <strong>Impuestos:</strong> IRPF sobre plusvalía al vender.<br>
+{intereses_nota}• <strong>Impuestos:</strong> IRPF 2024 sobre plusvalía al vender.<br>
 • <strong>Costes:</strong> {comision*100:.2f}% comisión + {slippage*100:.2f}% slippage por operación.
 </div>
 """, unsafe_allow_html=True)
