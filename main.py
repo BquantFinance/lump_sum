@@ -215,10 +215,26 @@ st.markdown("""
         color: #e2e8f0 !important;
     }
     
-    /* Hide Streamlit branding */
+    /* Hide Streamlit branding but keep sidebar functional */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
+    
+    /* Keep header visible for sidebar toggle, just hide the decoration */
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+        backdrop-filter: none !important;
+    }
+    
+    /* Ensure sidebar is always visible and styled */
+    section[data-testid="stSidebar"] {
+        display: block !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+    }
+    
+    section[data-testid="stSidebar"] > div {
+        background: linear-gradient(180deg, #0f0f18 0%, #151520 100%);
+    }
     
     /* Custom scrollbar */
     ::-webkit-scrollbar {
